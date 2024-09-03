@@ -1,20 +1,6 @@
-ifdef VERBOSE
-	ifneq ($(VERBOSE),0)
-		Q =
-		QUIET =
-	else
-		Q = @
-		QUIET = --quiet
-	endif
-else
-	Q = @
-	QUIET = --quiet
-endif
 
-MKFILE_PATH := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
-include $(MKFILE_PATH)/mk/Makefile.defs
-
-virtualenv:
+.PHONY: virtualenv
+virtualenv: ## Generating virtual environment
 	@echo "Generating virtual environment..."
 	$(Q)python3 -m virtualenv $(QUIET) $(VENV_DIR)
 	@echo "Virtual environement generated !"
@@ -24,15 +10,24 @@ virtualenv:
 setup:
 	$(Q)pip install $(QUIET) -r requirements-dev.txt
 
-test:
+.PHONY: test
+test: ## Test the code with pytest
 	$(Q)poetry install
 	$(Q)poetry run tox
 
-clean:
+.PHONY: build
+build: clean-build ## Build wheel file using poetry
+	@echo "🚀 Creating wheel file"
+	@poetry build
+
+.PHONY: clean
+clean: ## cleanup
 	@echo "Cleanup..."
 	$(Q)git clean -xdf
 	$(Q)rm -rf $(VENV_DIR)
 
-all: test \
-	clean
+.PHONY: help
+help:
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
 
