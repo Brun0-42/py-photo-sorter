@@ -14,7 +14,7 @@ endif
 
 VENV_DIR = $(CURDIR)/venv
 
-.PHONY: virtualenv test build clean help
+.PHONY: venv test build clean help
 
 help: ## Display this help message
 	@echo "Please use \`make <target>\` where <target> is one of"

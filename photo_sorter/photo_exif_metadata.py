@@ -6,51 +6,87 @@ import piexif
 import os
 import datetime
 import time
-import loguru_decorator
-
-#-----------------------------------------------------------------------------# 
-def _xp_decode(t):
-    """
-    Takes an EXIF XPKeywords tag and decodes it to a text string.
-    """
-    b = bytes(t)
-    return b[:-2].decode('utf-16-le')
-
-#-----------------------------------------------------------------------------# 
-def _xp_encode(s):
-    """
-    Takes a text string and encodes it as an EXIF XPKeywords tag.
-    """
-    b = s.encode('utf-16-le') + b'\x00\x00'
-    return tuple([int(i) for i in b])
+import photo_sorter.loguru_decorator as loguru_decorator
+import photo_sorter.my_string_utils as my_string_utils
 
 #-----------------------------------------------------------------------------# 
 class PhotoExifMetadata:
-    def __init__(self, file_path):
+    def __init__(self, file_path, auto_save=True):
         self._file_path = file_path
+        self._exif_dict = None
+        self._auto_save = auto_save
+
+        self.load()
+
+    def __del__(self):
+        if self._auto_save:
+            if self._exif_dict:
+                self.save()
+
+    @loguru_decorator.logger_wraps(level="DEBUG")
+    def load(self):
+        if not self._file_path or not os.path.isfile(self._file_path):
+            logger.error("No valid file path provided")
+            return
+
+        try:
+            with Image.open(self._file_path) as image:
+                self._exif_dict = piexif.load(image.info["exif"])
+        except Exception as e:
+            logger.warning(f"Error reading EXIF data ({self._file_path}): {e}")
+        logger.debug(f"load {self._file_path}")
+
+    @loguru_decorator.logger_wraps(level="DEBUG")
+    def save(self):
+        """
+        Writes the EXIF tag to an image.
+        """
+        if not self._file_path or not os.path.isfile(self._file_path):
+            logger.error("No valid file path provided")
+            return
+
+        try:
+            if self._exif_dict:
+                with Image.open(self._file_path) as image:
+                    exif_bytes = piexif.dump(self._exif_dict)
+                    image.save(self._file_path, exif=exif_bytes)
+            else:
+                logger.error("nothing to save in {self._file_path}")
+        except Exception as e:
+            logger.error(f"Error writing EXIF data in {self._file_path}: {e}")
 
     @loguru_decorator.logger_wraps(level="DEBUG")
     @logger.catch(level="DEBUG")
-    def print(self):
-        try:
-            with Image.open(self._file_path) as image:
-                exif_dict = piexif.load(image.info["exif"])
-                for ifd in ("0th", "Exif"):
-                    for tag in exif_dict[ifd]:
-                        tag_name = piexif.TAGS[ifd][tag]["name"]
-                        tag_type = piexif.TAGS[ifd][tag]["type"]
-                        tag_value = exif_dict[ifd][tag]
+    def __str__(self):
+        if not self._exif_dict:
+            return "No EXIF data found in the image."
 
-                        if tag_type == piexif.TYPES.Byte:
-                            tag_value = _xp_decode(tag_value)
-                        elif tag_type == piexif.TYPES.Ascii:
-                            tag_value = tag_value.decode('utf-8')
-                        elif tag_type == piexif.TYPES.Undefined:
-                            tag_value = ""
-                        if tag_value:
-                            print(f"  {tag_name} ({tag_type}): {tag_value}")
-        except Exception as e:
-            logger.error(f"Error reading EXIF data ({self._file_path}): {e}")
+        result = ""
+
+        if self._exif_dict:
+            first_element = True
+            for ifd in ("0th", "Exif"):
+                for tag in self._exif_dict[ifd]:
+                    tag_name = piexif.TAGS[ifd][tag]["name"]
+                    tag_type = piexif.TAGS[ifd][tag]["type"]
+                    tag_value = self._exif_dict[ifd][tag]
+
+                    if tag_type == piexif.TYPES.Byte:
+                        tag_value = my_string_utils.xp_decode(tag_value)
+                    elif tag_type == piexif.TYPES.Ascii:
+                        tag_value = tag_value.decode('utf-8')
+                    elif tag_type == piexif.TYPES.Undefined:
+                        tag_value = ""
+
+                    if tag_value:
+                        if first_element:
+                            result += f"{tag_name} ({tag_type}): {tag_value}"
+                            first_element = False
+                        else:
+                            result += f" | {tag_name} ({tag_type}): {tag_value}"
+        else:
+            logger.error(f"Nothing load ({self._file_path})")
+        return result
 
     @loguru_decorator.logger_wraps(level="DEBUG")
     @logger.catch(level="ERROR")
@@ -58,11 +94,13 @@ class PhotoExifMetadata:
         """
         Reads an EXIF tag from an image
         """
+        if not self._exif_dict:
+            logger.error(f"No EXIF data found in the image {self._file_path}")
+            return None
+
         try:
-            with Image.open(self._file_path) as im:
-                exif_dict = piexif.load(im.info["exif"])
-                value = exif_dict[exif_key][exif_tag]
-                return value
+            value = self._exif_dict[exif_key][exif_tag]
+            return value
         except KeyError:
             logger.error(f"No {exif_key}/{exif_tag} tag found in {self._file_path}")
             return None
@@ -73,23 +111,13 @@ class PhotoExifMetadata:
         """
         Writes the EXIF tag to an image.
         """
-        try:
-            with Image.open(self._file_path) as image:
-                exif_dict = piexif.load(image.info["exif"]) if "exif" in image.info else {}
-                print("toto")
-                print(f"{exif_dict=}")
-                exif_dict[exif_key][exif_tag] = exif_value
-                print("toto")
-                exif_bytes = piexif.dump(exif_dict)
-                print("titi")
-                print(f"{exif_bytes=}")
-                image.save(self._file_path, exif=exif_bytes)
-        except Exception as e:
-            tag_name = piexif.TAGS[exif_key][exif_tag]["name"]
-            print(f"{tag_name=}")
-            print(f"{exif_key=}")
+        if not self._exif_dict:
+            self._exif_dict = {}
+            self._exif_dict[exif_key] = {}
+        else:
+            logger.debug(f"initiale exif metadata for {self._file_path}")
 
-            logger.error(f"Error writing EXIF data ({exif_key}{tag_name}) in {self._file_path}: {e}")
+        self._exif_dict[exif_key][exif_tag] = exif_value
 
     @loguru_decorator.logger_wraps(level="DEBUG")
     @logger.catch(level="ERROR")
@@ -99,7 +127,7 @@ class PhotoExifMetadata:
         """
         exif_value = self._read_exif_tag("0th", piexif.ImageIFD.XPAuthor)
         if exif_value:
-            return _xp_decode(exif_value)
+            return my_string_utils.xp_decode(exif_value)
         else:
             return None
 
@@ -109,7 +137,7 @@ class PhotoExifMetadata:
         """
         Writes the EXIF XPAuthor tag to an image.
         """
-        self._write_exif_tag("0th", piexif.ImageIFD.XPAuthor, _xp_encode(value))
+        self._write_exif_tag("0th", piexif.ImageIFD.XPAuthor, my_string_utils.xp_encode(value))
 
     @loguru_decorator.logger_wraps(level="DEBUG")
     @logger.catch(level="ERROR")
@@ -119,7 +147,7 @@ class PhotoExifMetadata:
         """
         exif_value = self._read_exif_tag("0th", piexif.ImageIFD.XPTitle)
         if exif_value:
-            return _xp_decode(exif_value)
+            return my_string_utils.xp_decode(exif_value)
         else:
             return None
 
@@ -129,7 +157,7 @@ class PhotoExifMetadata:
         """
         Writes the EXIF XPTitle tag to an image.
         """
-        exif_value = _xp_encode(value)
+        exif_value = my_string_utils.xp_encode(value)
         self._write_exif_tag("0th", piexif.ImageIFD.XPTitle, exif_value)
 
     @loguru_decorator.logger_wraps(level="DEBUG")
@@ -140,7 +168,7 @@ class PhotoExifMetadata:
         """
         exif_value = self._read_exif_tag("0th", piexif.ImageIFD.XPKeywords)
         if exif_value:
-            return _xp_decode(exif_value)
+            return my_string_utils.xp_decode(exif_value)
         else:
             return None
 
@@ -150,7 +178,7 @@ class PhotoExifMetadata:
         """
         Writes the EXIF XPTitle tag to an image.
         """
-        exif_value = _xp_encode(value)
+        exif_value = my_string_utils.xp_encode(value)
         self._write_exif_tag("0th", piexif.ImageIFD.XPKeywords, exif_value)
 
     @loguru_decorator.logger_wraps(level="DEBUG")
@@ -161,17 +189,17 @@ class PhotoExifMetadata:
         """
         exif_value = self._read_exif_tag("0th", piexif.ImageIFD.XPSubject)
         if exif_value:
-            return _xp_decode(exif_value)
+            return my_string_utils.xp_decode(exif_value)
         else:
             return None
-        
+
     @loguru_decorator.logger_wraps(level="DEBUG")
     @logger.catch(level="ERROR")
     def set_xp_subject(self, value):
         """
         Writes the EXIF XPSubject tag to an image.
         """
-        exif_value = _xp_encode(value)
+        exif_value = my_string_utils.xp_encode(value)
         self._write_exif_tag("0th", piexif.ImageIFD.XPSubject, exif_value)
 
     @loguru_decorator.logger_wraps(level="DEBUG")
@@ -182,7 +210,7 @@ class PhotoExifMetadata:
         """
         exif_value = self._read_exif_tag("0th", piexif.ImageIFD.XPComment)
         if exif_value:
-            return _xp_decode(exif_value)
+            return my_string_utils.xp_decode(exif_value)
         else:
             return None
 
@@ -192,7 +220,7 @@ class PhotoExifMetadata:
         """
         Writes the EXIF XPComment tag to an image.
         """
-        exif_value = _xp_encode(value)
+        exif_value = my_string_utils.xp_encode(value)
         self._write_exif_tag("0th", piexif.ImageIFD.XPComment, exif_value)
 
     @loguru_decorator.logger_wraps(level="DEBUG")
@@ -206,7 +234,7 @@ class PhotoExifMetadata:
             return exif_value.decode('utf-8')
         else:
             return None
-        
+
     @loguru_decorator.logger_wraps(level="DEBUG")
     @logger.catch(level="ERROR")
     def set_title(self, value):
@@ -227,7 +255,7 @@ class PhotoExifMetadata:
             return exif_value.decode('utf-8')
         else:
             return None
-        
+
     @loguru_decorator.logger_wraps(level="DEBUG")
     @logger.catch(level="ERROR")
     def set_artist(self, value):
@@ -235,7 +263,9 @@ class PhotoExifMetadata:
         Writes the EXIF Artist tag to an image.
         """
         exif_value = value.encode('utf-8')
+        logger.debug(f"before write {self._exif_dict}")
         self._write_exif_tag("0th", piexif.ImageIFD.Artist, exif_value)
+        logger.debug(f"after write {self._exif_dict}")
 
     @loguru_decorator.logger_wraps(level="DEBUG")
     @logger.catch(level="ERROR")
@@ -248,7 +278,7 @@ class PhotoExifMetadata:
             return exif_value.decode('utf-8')
         else:
             return None
-        
+
     @loguru_decorator.logger_wraps(level="DEBUG")
     @logger.catch(level="ERROR")
     def set_copyright(self, value):
@@ -296,13 +326,12 @@ class PhotoExifMetadata:
         try:
             timestamp = self.get_datetime_taken()
             if timestamp:
-                timestamp = timestamp.decode()
-                year, month, _ = timestamp.split(":")
+                year, month, *rest = timestamp.split(":")
                 return year, month
         except Exception as e:
             logger.error(f"Error reading metadata from '{self._file_path}': {e}")
 
         timestamp = time.strftime("%Y:%m:%d", time.strptime(time.ctime(os.path.getmtime(self._file_path))))
-        logger.error(f"Last modification time for '{self._file_path}': {timestamp}")
+        logger.info(f"Last modification time for '{self._file_path}': {timestamp}")
         year, month, _ = timestamp.split(":")
         return year, month
